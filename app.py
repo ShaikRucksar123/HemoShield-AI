@@ -1,9 +1,9 @@
 import os
 import numpy as np
-import tensorflow as tf
 from flask import Flask, render_template, request, jsonify
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from keras.models import load_model
+from keras.preprocessing import image
+from keras.applications.mobilenet_v2 import preprocess_input
 from werkzeug.utils import secure_filename
 import pickle
 
@@ -18,7 +18,7 @@ app.config['ALLOWED_EXTENSIONS'] = {
 }
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-IMG_SIZE = (160, 160)  # MUST match training
+IMG_SIZE = (160, 160)
 
 MODEL_PATH = "models/saved/combined_model_fast.h5"
 SCALER_PATH = "models/saved/scaler.pkl"
@@ -30,19 +30,22 @@ CLASS_NAMES = []
 
 # ================= LOAD MODEL =================
 try:
-    MODEL = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    MODEL = load_model(MODEL_PATH, compile=False)
+    print("✅ Model loaded")
 except Exception as e:
     print("❌ Model loading failed:", e)
 
 try:
     with open(SCALER_PATH, "rb") as f:
         SCALER = pickle.load(f)
+    print("✅ Scaler loaded")
 except Exception as e:
     print("❌ Scaler loading failed:", e)
 
 try:
     with open(CLASS_NAMES_PATH, "rb") as f:
         CLASS_NAMES = pickle.load(f)
+    print("✅ Class names loaded")
 except Exception as e:
     print("❌ Class names loading failed:", e)
 
@@ -54,53 +57,41 @@ def allowed_file(filename):
 
 
 def validate_clinical_inputs(wbc, rbc, platelets, hb, blasts, age):
-    """
-    Validates clinical values against realistic human ranges.
-    Returns (True, "") if valid
-    Returns (False, error_message) if invalid
-    """
 
-    # Negative check
     if any(v < 0 for v in [wbc, rbc, platelets, hb, blasts, age]):
         return False, "Clinical values cannot be negative."
 
-    # Age
     if not (0 <= age <= 120):
-        return False, "Age must be between 0 and 120 years."
+        return False, "Age must be between 0 and 120."
 
-    # WBC (x10^9/L)
     if not (1 <= wbc <= 200):
-        return False, "WBC value is out of realistic range (1 - 200)."
+        return False, "WBC value out of range."
 
-    # RBC (million cells/µL)
     if not (1 <= rbc <= 10):
-        return False, "RBC value is out of realistic range (1 - 10)."
+        return False, "RBC value out of range."
 
-    # Platelets (x10^9/L)
     if not (10 <= platelets <= 1500):
-        return False, "Platelet count is out of realistic range (10 - 1500)."
+        return False, "Platelets out of range."
 
-    # Hemoglobin (g/dL)
     if not (3 <= hb <= 25):
-        return False, "Hemoglobin value is out of realistic range (3 - 25)."
+        return False, "Hemoglobin out of range."
 
-    # Blasts %
     if not (0 <= blasts <= 100):
-        return False, "Blasts percentage must be between 0 and 100."
+        return False, "Blast percentage must be 0–100."
 
     return True, ""
 
 
 def get_disease_specific_suggestion(label):
     suggestions = {
-        "ALL": "Acute Lymphoblastic Leukemia detected. Immediate hematologist consultation advised.",
+        "ALL": "Acute Lymphoblastic Leukemia detected. Immediate consultation required.",
         "AML": "Acute Myeloid Leukemia detected. Urgent specialist consultation required.",
-        "CLL": "Chronic Lymphocytic Leukemia detected. Staging and monitoring recommended.",
-        "CML": "Chronic Myeloid Leukemia detected. Oncologist consultation recommended.",
-        "FL": "Follicular Lymphoma detected. Further oncological evaluation required.",
-        "Healthy": "No abnormal cancerous patterns detected. Patient appears healthy."
+        "CLL": "Chronic Lymphocytic Leukemia detected. Monitoring recommended.",
+        "CML": "Chronic Myeloid Leukemia detected. Oncologist consultation advised.",
+        "FL": "Follicular Lymphoma detected. Further evaluation required.",
+        "Healthy": "No abnormal cancerous patterns detected."
     }
-    return suggestions.get(label, "Consult a medical specialist for further evaluation.")
+    return suggestions.get(label, "Consult a specialist.")
 
 
 # ================= ROUTES =================
@@ -111,15 +102,13 @@ def index():
 
 @app.route("/dashboard")
 def dashboard():
+
     metrics = {
         "accuracy": 0.9761,
-        "f1_score": 0.9980,
-        "dataset_size": 7000,
-        "history": {
-            "accuracy": [0.65,0.72,0.81,0.88,0.91,0.93,0.95,0.96,0.965,0.97],
-            "f1_score": [0.62,0.77,0.82,0.86,0.89,0.91,0.93,0.94,0.93,0.958]
-        }
+        "f1_score": 0.958,
+        "dataset_size": 7000
     }
+
     return render_template("dashboard.html", metrics=metrics)
 
 
@@ -133,21 +122,14 @@ def predict_combined():
         })
 
     try:
-        # ===== Clinical Inputs =====
-        try:
-            wbc = float(request.form["wbc"])
-            rbc = float(request.form["rbc"])
-            platelets = float(request.form["platelets"])
-            hb = float(request.form["hb"])
-            blasts = float(request.form["blasts"])
-            age = float(request.form["age"])
-        except ValueError:
-            return jsonify({
-                "status": "error",
-                "message": "All clinical fields must be numeric values."
-            })
 
-        # ===== Validate Clinical Inputs =====
+        wbc = float(request.form["wbc"])
+        rbc = float(request.form["rbc"])
+        platelets = float(request.form["platelets"])
+        hb = float(request.form["hb"])
+        blasts = float(request.form["blasts"])
+        age = float(request.form["age"])
+
         is_valid, error_message = validate_clinical_inputs(
             wbc, rbc, platelets, hb, blasts, age
         )
@@ -158,36 +140,35 @@ def predict_combined():
                 "message": error_message
             })
 
-        # ===== Image Upload =====
         file = request.files.get("file")
 
         if not file or not allowed_file(file.filename):
             return jsonify({
                 "status": "error",
-                "message": "Invalid file type."
+                "message": "Invalid image file."
             })
 
         filepath = os.path.join(
             app.config["UPLOAD_FOLDER"],
             secure_filename(file.filename)
         )
+
         file.save(filepath)
 
-        # ===== Image Processing =====
         img = image.load_img(filepath, target_size=IMG_SIZE)
         img_array = image.img_to_array(img)
         img_array = preprocess_input(img_array)
         img_array = np.expand_dims(img_array, axis=0)
 
-        # ===== Clinical Processing =====
         clinical_array = np.array(
             [[wbc, rbc, platelets, hb, blasts, age]],
             dtype=np.float32
         )
+
         clinical_array = SCALER.transform(clinical_array)
 
-        # ===== Prediction =====
-        preds = MODEL.predict([img_array, clinical_array], verbose=0)[0]
+        preds = MODEL.predict([img_array, clinical_array])[0]
+
         pred_index = int(np.argmax(preds))
         confidence = float(np.max(preds) * 100)
 
@@ -209,4 +190,5 @@ def predict_combined():
 
 # ================= RUN =================
 if __name__ == "__main__":
-    app.run(debug=True, use_reloader=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
